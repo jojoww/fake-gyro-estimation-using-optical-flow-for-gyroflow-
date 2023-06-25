@@ -1,3 +1,5 @@
+
+# Import numpy and OpenCV
 import numpy as np
 import cv2
 import os
@@ -7,23 +9,22 @@ import os
 
 # Copy the camera matrix from the lens profile you are using in gyroflow
 cameraMatrix = [
-    [
-        5801.606439877379,
+      [
+        1836.9922183665276,
         0.0,
-        1930.5760969035825
-    ],
-    [
+        1920.41209963424
+      ],
+      [
         0.0,
-        5810.509627755767,
-        1112.9812445517732
-    ],
-    [
+        1842.3851575279864,
+        1074.5706377526926
+      ],
+      [
         0.0,
         0.0,
         1.0
+      ]
     ]
-]
-
 # The scale can be used for fixing the result. If the detected shifts
 # are too small (e.g. camera movements are not possible to be eliminated
 # completely), a correction with scale > 1 might help (e.g. 1.05)
@@ -84,6 +85,49 @@ def getCsvHeader(fps):
         t,gx,gy,gz
         """
 
+def getCameraShiftLK(previousImage, currentImage, width, height, minimumTrackedFeatures):
+        # Detect feature points in previous frame
+    previousPoints = cv2.goodFeaturesToTrack(previousImage,
+                                        maxCorners=200,
+                                        qualityLevel=0.01,
+                                        minDistance=30,
+                                        blockSize=3)
+
+
+    # Calculate optical flow (i.e. track feature points)
+    currentPoints, status, err = cv2.calcOpticalFlowPyrLK(
+        previousImage, currentImage, previousPoints, None)
+
+    # Sanity check
+    assert previousPoints.shape == currentPoints.shape
+
+    # Filter only valid points
+    idx = np.where(status == 1)[0]
+    previousPoints = previousPoints[idx]
+    currentPoints = currentPoints[idx]
+
+    # Shift the points, since gyroflow looks at the center of an image;
+    # inverse y axis
+    previousPointsCorrected = previousPoints - [width / 2, height / 2]
+    previousPointsCorrected *= [1, -1]
+    currentPointsCorrected = currentPoints - [width / 2, height / 2]
+    currentPointsCorrected *= [1, -1]
+
+    # Find transformation matrix
+    m = cv2.estimateAffinePartial2D(previousPointsCorrected, currentPointsCorrected)[0]
+
+    if len(previousPoints) > minimumTrackedFeatures and len(
+            currentPoints) > minimumTrackedFeatures:
+        # Extract translation
+        dx = m[0, 2]
+        dy = m[1, 2]
+
+        # Extract rotation angle
+        da = np.arctan2(m[1, 0], m[0, 0])
+    else:
+        dx, dy, da = 0, 0, 0
+    return dx, dy, da
+
 
 for fileName in askUserForFiles():
     print("Processing file", fileName)
@@ -108,68 +152,33 @@ for fileName in askUserForFiles():
     if not os.path.isfile(fileNameTrajectory):
         _, prev = cap.read()
         prev = cv2.resize(prev, (width, height))
-        prev_gray = cv2.cvtColor(prev, cv2.COLOR_BGR2GRAY)
+        previousImage = cv2.cvtColor(prev, cv2.COLOR_BGR2GRAY)
 
         # Get transformations
         transforms = np.zeros((numberOfFrames - 1, 3), np.float32)
-        for i in range(numberOfFrames - 2):
-            # Detect feature points in previous frame
-            prev_pts = cv2.goodFeaturesToTrack(prev_gray,
-                                               maxCorners=200,
-                                               qualityLevel=0.01,
-                                               minDistance=30,
-                                               blockSize=3)
-
-            # Read next frame
+        index = 0
+        # Analyze the video, if we don't have a trajectory file already
+        for _ in range(numberOfFrames - 2):
+             # Read next frame
             success, curr = cap.read()
-            curr = cv2.resize(curr, (width, height))
-            if not success:
-                break
+            if curr is None:
+                index -= 1
+                print("Had to skip frame", index)
+                continue
+
+            print(f"Frame {index} of {numberOfFrames}")
 
             # Convert to grayscale
-            curr_gray = cv2.cvtColor(curr, cv2.COLOR_BGR2GRAY)
+            currentImage = cv2.cvtColor(cv2.resize(curr, (width, height)), cv2.COLOR_BGR2GRAY)
 
-            # Calculate optical flow (i.e. track feature points)
-            curr_pts, status, err = cv2.calcOpticalFlowPyrLK(
-                prev_gray, curr_gray, prev_pts, None)
-
-            # Sanity check
-            assert prev_pts.shape == curr_pts.shape
-
-            # Filter only valid points
-            idx = np.where(status == 1)[0]
-            prev_pts = prev_pts[idx]
-            curr_pts = curr_pts[idx]
-
-            # Shift the points, since gyroflow looks at the center of an image;
-            # inverse y axis
-            prev_pts_shifted = prev_pts - [width / 2, height / 2]
-            prev_pts_shifted *= [1, -1]
-            curr_pts_shifted = curr_pts - [width / 2, height / 2]
-            curr_pts_shifted *= [1, -1]
-
-            # Find transformation matrix
-            m = cv2.estimateAffinePartial2D(prev_pts_shifted, curr_pts_shifted)[
-                0]  # will only work with OpenCV-3 or less
-
-            if len(prev_pts) > minimumTrackedFeatures and len(
-                    curr_pts) > minimumTrackedFeatures:
-                # Extract translation
-                dx = m[0, 2]
-                dy = m[1, 2]
-
-                # Extract rotation angle
-                da = np.arctan2(m[1, 0], m[0, 0])
-            else:
-                dx, dy, da = 0, 0, 0
+            dx, dy, da = getCameraShiftLK(previousImage, currentImage, width, height, minimumTrackedFeatures)
 
             # Store transformation
-            transforms[i] = [dx, dy, da]
+            transforms[index] = [dx, dy, da]
 
-            prev_gray = curr_gray
+            previousImage = currentImage
 
-            print(
-                f"Frame {i} of {numberOfFrames}. Tracked points : {len(prev_pts)}")
+            index += 1
         np.save(fileNameTrajectory, transforms)
     cap.release()
 
@@ -194,10 +203,10 @@ for fileName in askUserForFiles():
         # Not sure about the order of rotations. In case gyroflow has a specific order,
         # we could change it this way. I think so.
         # from scipy.spatial.transform import Rotation
-        # rot = Rotation.from_euler('xyz', [dx, dy, da], degrees=False)
-        # Convert to quaternions and print
-        # rot_adjusted = rot.as_euler('zxy')
-        # dx, dy, da = rot_adjusted
+        # rot = Rotation.from_euler('xyz', [dxRotation, dyRotation, da], degrees=False)
+        # # Convert to quaternions and print
+        # rot_adjusted = rot.as_euler('zyx')
+        # dxRotation, dyRotation, da = rot_adjusted
 
         csvOut += f"{i},{dxRotation},{dyRotation},{da}\n"
     f = open(fileNameGyro, "w")
