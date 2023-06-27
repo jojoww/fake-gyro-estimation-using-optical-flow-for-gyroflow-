@@ -135,12 +135,17 @@ def getCameraShiftByRegistration(previousImage, currentImage, width, height):
 
 
 def getCameraShiftLK(previousImage, currentImage, width, height):
-        # Detect feature points in previous frame
+    # Detect feature points in previous frame
+    borderHeight = int(height/5)
+    borderWidth = int(height/5)
+    edgeMask = np.zeros((height, width), dtype=np.uint8)
+    edgeMask[borderHeight:(height-borderHeight), borderWidth:(width-borderWidth)] = 1
     previousPoints = cv2.goodFeaturesToTrack(previousImage,
                                         maxCorners=200,
                                         qualityLevel=0.01,
                                         minDistance=30,
-                                        blockSize=3)
+                                        blockSize=3,
+                                        mask=edgeMask)
 
 
     # Calculate optical flow (i.e. track feature points)
