@@ -1,4 +1,3 @@
-
 # Import numpy and OpenCV
 import numpy as np
 import cv2
@@ -25,6 +24,13 @@ cameraMatrix = [
         1.0
       ]
     ]
+
+distortionCoeffs = [
+      0.38299220710571275,
+      -0.17675639024960604,
+      0.7856650933984539,
+      -0.5395566240889261
+    ]
 # The scale can be used for fixing the result. If the detected shifts
 # are too small (e.g. camera movements are not possible to be eliminated
 # completely), a correction with scale > 1 might help (e.g. 1.05)
@@ -34,6 +40,14 @@ internalImageWidth = 1280
 minimumTrackedFeatures = 5
 ############ End of config ############
 
+cameraMatrix = np.array(cameraMatrix)
+distortionCoeffs = np.array(distortionCoeffs)
+
+def preprocessImage(image, width, height, cameraMatrix, distortionCoeffs, newCameraMatrix):
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    image = cv2.fisheye.undistortImage(image, cameraMatrix, distortionCoeffs, np.eye(3), newCameraMatrix)
+    image = cv2.resize(image, (width, height))
+    return image
 
 def getFovAndCanvasDistance(videoWith, internalImageWidth, cameraMatrix):
     fov = 2 * np.arctan2(videoWith, 2 * cameraMatrix[1][1])
@@ -131,11 +145,17 @@ def getCameraShiftLK(previousImage, currentImage, width, height, minimumTrackedF
 
 for fileName in askUserForFiles():
     print("Processing file", fileName)
+    baseFileName = ".".join(fileName.split(".")[0:-1])
 
-    fileNameGyro = fileName + '.gcsv'
-    fileNameTrajectory = fileName + ".transforms.npy"
+    fileNameGyro = baseFileName + '.gcsv'
+    fileNameTrajectory = baseFileName + ".transforms.npy"
 
     cap = cv2.VideoCapture(fileName)
+    size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+    newCameraMatrix, roi = cv2.getOptimalNewCameraMatrix(
+        cameraMatrix, distortionCoeffs, size, 1, size)
+    newCameraMatrix = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(cameraMatrix, distortionCoeffs, size, np.eye(3))
+
     numberOfFrames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     height = int(
         cap.get(
@@ -150,9 +170,8 @@ for fileName in askUserForFiles():
 
     # Analyze the video, if we don't have a trajectory file already
     if not os.path.isfile(fileNameTrajectory):
-        _, prev = cap.read()
-        prev = cv2.resize(prev, (width, height))
-        previousImage = cv2.cvtColor(prev, cv2.COLOR_BGR2GRAY)
+        _, image = cap.read()
+        previousImage = preprocessImage(image, width, height, cameraMatrix, distortionCoeffs, newCameraMatrix)
 
         # Get transformations
         transforms = np.zeros((numberOfFrames - 1, 3), np.float32)
@@ -160,17 +179,14 @@ for fileName in askUserForFiles():
         # Analyze the video, if we don't have a trajectory file already
         for _ in range(numberOfFrames - 2):
              # Read next frame
-            success, curr = cap.read()
-            if curr is None:
-                index -= 1
+            success, image = cap.read()
+            if image is None:
+                # index -= 1
                 print("Had to skip frame", index)
                 continue
 
             print(f"Frame {index} of {numberOfFrames}")
-
-            # Convert to grayscale
-            currentImage = cv2.cvtColor(cv2.resize(curr, (width, height)), cv2.COLOR_BGR2GRAY)
-
+            currentImage = preprocessImage(image, width, height, cameraMatrix, distortionCoeffs, newCameraMatrix)
             dx, dy, da = getCameraShiftLK(previousImage, currentImage, width, height, minimumTrackedFeatures)
 
             # Store transformation
