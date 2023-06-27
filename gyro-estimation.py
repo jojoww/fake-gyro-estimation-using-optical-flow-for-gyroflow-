@@ -37,7 +37,6 @@ distortionCoeffs = [
 scale = 1.0
 
 internalImageWidth = 1280
-minimumTrackedFeatures = 5
 ############ End of config ############
 
 cameraMatrix = np.array(cameraMatrix)
@@ -99,7 +98,43 @@ def getCsvHeader(fps):
         t,gx,gy,gz
         """
 
-def getCameraShiftLK(previousImage, currentImage, width, height, minimumTrackedFeatures):
+
+def getCameraShiftByRegistration(previousImage, currentImage, width, height):
+    # - Just an incomplete draft -
+    # Find size of image1
+    sz = previousImage.shape
+    
+    # Define the motion model
+    #warp_mode = cv2.MOTION_TRANSLATION
+    #warp_matrix = np.eye(2, 3, dtype=np.float32)
+    
+    # Define 2x3 or 3x3 matrices and initialize the matrix to identity
+    warp_mode = cv2.MOTION_HOMOGRAPHY
+    warp_matrix = np.eye(3, 3, dtype=np.float32)
+    
+    # Specify the number of iterations.
+    number_of_iterations = 500
+    
+    # Specify the threshold of the increment
+    # in the correlation coefficient between two iterations
+    termination_eps = 1e-5
+    
+    # Define termination criteria
+    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, number_of_iterations,  termination_eps)
+    
+    # Run the ECC algorithm. The results are stored in warp_matrix.
+    (cc, warp_matrix) = cv2.findTransformECC (previousImage, currentImage,warp_matrix, warp_mode, criteria)
+    
+    #if warp_mode == cv2.MOTION_HOMOGRAPHY :
+    # Use warpPerspective for Homography
+    im2_aligned = cv2.warpPerspective (currentImage, warp_matrix, (sz[1],sz[0]), flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP)
+    # else :
+    # Use warpAffine for Translation, Euclidean and Affine
+    # im2_aligned = cv2.warpAffine(currentImage, warp_matrix, (sz[1],sz[0]), flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP);
+    return getCameraShiftLK(im2_aligned, currentImage, width, height)
+
+
+def getCameraShiftLK(previousImage, currentImage, width, height):
         # Detect feature points in previous frame
     previousPoints = cv2.goodFeaturesToTrack(previousImage,
                                         maxCorners=200,
@@ -129,7 +164,7 @@ def getCameraShiftLK(previousImage, currentImage, width, height, minimumTrackedF
 
     # Find transformation matrix
     m = cv2.estimateAffinePartial2D(previousPointsCorrected, currentPointsCorrected)[0]
-
+    minimumTrackedFeatures = 5
     if len(previousPoints) > minimumTrackedFeatures and len(
             currentPoints) > minimumTrackedFeatures:
         # Extract translation
@@ -187,7 +222,7 @@ for fileName in askUserForFiles():
 
             print(f"Frame {index} of {numberOfFrames}")
             currentImage = preprocessImage(image, width, height, cameraMatrix, distortionCoeffs, newCameraMatrix)
-            dx, dy, da = getCameraShiftLK(previousImage, currentImage, width, height, minimumTrackedFeatures)
+            dx, dy, da = getCameraShiftLK(previousImage, currentImage, width, height)
 
             # Store transformation
             transforms[index] = [dx, dy, da]
