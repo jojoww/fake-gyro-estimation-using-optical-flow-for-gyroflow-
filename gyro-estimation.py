@@ -5,7 +5,7 @@ import os
 
 
 ############ Start of config ############
-tracker = "doubleflow" # matcher, flow, doubleflow
+tracker = "doubleflow" # matcher, flow, doubleflow, registration
 
 # Copy the camera matrix from the lens profile you are using in gyroflow
 cameraMatrix = [
@@ -125,15 +125,36 @@ def getCameraShiftByRegistration(previousImage, currentImage, width, height):
     criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, number_of_iterations,  termination_eps)
     
     # Run the ECC algorithm. The results are stored in warp_matrix.
-    (cc, warp_matrix) = cv2.findTransformECC (previousImage, currentImage,warp_matrix, warp_mode, criteria)
-    
+    (_, m) = cv2.findTransformECC (previousImage, currentImage,warp_matrix, warp_mode, criteria)
+    points1 = np.float32(np.array([[
+        [0, 0],
+        [int(width / 2), 0],
+        [width, 0],
+        [int(width / 2), int(height/2)],
+        [width, int(height/2)],
+        [int(width / 2), height],
+        [width, height],
+    ]]))
+
+    points2 = cv2.perspectiveTransform(points1, m)
+    points1 = points1 - [width / 2, height / 2]
+    points1 *= [1, -1]
+    points2 = points2 - [width / 2, height / 2]
+    points2 *= [1, -1]
+    # Find homography
+    m = cv2.estimateAffinePartial2D(points1, points2)[0]
+    # Extract translation
+    dx = m[0, 2]
+    dy = m[1, 2]
+
+    # Extract rotation angle
+    da = np.arctan2(m[1, 0], m[0, 0])
+    return dx, dy, da
     #if warp_mode == cv2.MOTION_HOMOGRAPHY :
     # Use warpPerspective for Homography
-    im2_aligned = cv2.warpPerspective (currentImage, warp_matrix, (sz[1],sz[0]), flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP)
     # else :
     # Use warpAffine for Translation, Euclidean and Affine
     # im2_aligned = cv2.warpAffine(currentImage, warp_matrix, (sz[1],sz[0]), flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP);
-    return getCameraShiftLK(im2_aligned, currentImage, width, height)
 
 
 def getCameraShiftFeature(previousImage, currentImage, width, height):
@@ -157,8 +178,8 @@ def getCameraShiftFeature(previousImage, currentImage, width, height):
     matches = matches[:numGoodMatches]
 
     # Draw top matches
-    imMatches = cv2.drawMatches(previousImage, keypoints1, currentImage, keypoints2, matches, None)
-    #cv2.imwrite("matches.jpg", imMatches)
+    # imMatches = cv2.drawMatches(previousImage, keypoints1, currentImage, keypoints2, matches, None)
+    # cv2.imwrite("matches.jpg", imMatches)
 
     minimumTrackedFeatures = 5
     print(f"Found {len(matches)} features")
@@ -172,6 +193,7 @@ def getCameraShiftFeature(previousImage, currentImage, width, height):
             points2[i, :] = np.array(keypoints2[match.trainIdx].pt) - [width / 2, height / 2]
         points1 *= [1, -1]
         points2 *= [1, -1]
+
         # Find homography
         m = cv2.estimateAffinePartial2D(points1, points2)[0]
         # Extract translation
@@ -286,8 +308,10 @@ for fileName in askUserForFiles():
                 dx = (dx1 - dx2) / 2.
                 dy = (dy1 - dy2) / 2.
                 da = (da1 - da2) / 2.
-            else:
+            elif tracker == "matcher":
                 dx, dy, da = getCameraShiftFeature(previousImage, currentImage, width, height)
+            else:
+                dx, dy, da = getCameraShiftByRegistration(previousImage, currentImage, width, height)
 
             # Store transformation
             transforms[index + 1] = [dx, dy, da]
