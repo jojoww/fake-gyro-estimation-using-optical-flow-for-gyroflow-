@@ -5,6 +5,7 @@ import os
 
 
 ############ Start of config ############
+tracker = "doubleflow" # matcher, flow, doubleflow
 
 # Copy the camera matrix from the lens profile you are using in gyroflow
 cameraMatrix = [
@@ -24,6 +25,7 @@ cameraMatrix = [
         1.0
       ]
     ]
+
 
 distortionCoeffs = [
       0.38299220710571275,
@@ -134,6 +136,55 @@ def getCameraShiftByRegistration(previousImage, currentImage, width, height):
     return getCameraShiftLK(im2_aligned, currentImage, width, height)
 
 
+def getCameraShiftFeature(previousImage, currentImage, width, height):
+    MAX_FEATURES = 500
+    GOOD_MATCH_PERCENT = 0.15
+ 
+    # Detect ORB features and compute descriptors.
+    orb = cv2.ORB_create(MAX_FEATURES)
+    keypoints1, descriptors1 = orb.detectAndCompute(previousImage, None)
+    keypoints2, descriptors2 = orb.detectAndCompute(currentImage, None)
+
+    # Match features.
+    matcher = cv2.DescriptorMatcher_create(cv2.DESCRIPTOR_MATCHER_BRUTEFORCE_HAMMING)
+    matches = matcher.match(descriptors1, descriptors2, None)
+
+    # Sort matches by score
+    matches = sorted(matches, key=lambda x: x.distance, reverse=False)
+
+    # Remove not so good matches
+    numGoodMatches = int(len(matches) * GOOD_MATCH_PERCENT)
+    matches = matches[:numGoodMatches]
+
+    # Draw top matches
+    imMatches = cv2.drawMatches(previousImage, keypoints1, currentImage, keypoints2, matches, None)
+    #cv2.imwrite("matches.jpg", imMatches)
+
+    minimumTrackedFeatures = 5
+    print(f"Found {len(matches)} features")
+    if len(matches) > minimumTrackedFeatures:
+        # Extract location of good matches
+        points1 = np.zeros((len(matches), 2), dtype=np.float32)
+        points2 = np.zeros((len(matches), 2), dtype=np.float32)
+
+        for i, match in enumerate(matches):
+            points1[i, :] = np.array(keypoints1[match.queryIdx].pt) - [width / 2, height / 2]
+            points2[i, :] = np.array(keypoints2[match.trainIdx].pt) - [width / 2, height / 2]
+        points1 *= [1, -1]
+        points2 *= [1, -1]
+        # Find homography
+        m = cv2.estimateAffinePartial2D(points1, points2)[0]
+        # Extract translation
+        dx = m[0, 2]
+        dy = m[1, 2]
+
+        # Extract rotation angle
+        da = np.arctan2(m[1, 0], m[0, 0])
+    else:
+        dx, dy, da = 0, 0, 0
+    return dx, dy, da
+ 
+
 def getCameraShiftLK(previousImage, currentImage, width, height):
     # Detect feature points in previous frame
     borderHeight = int(height/5)
@@ -168,10 +219,10 @@ def getCameraShiftLK(previousImage, currentImage, width, height):
     currentPointsCorrected *= [1, -1]
 
     # Find transformation matrix
-    m = cv2.estimateAffinePartial2D(previousPointsCorrected, currentPointsCorrected)[0]
     minimumTrackedFeatures = 5
     if len(previousPoints) > minimumTrackedFeatures and len(
             currentPoints) > minimumTrackedFeatures:
+        m = cv2.estimateAffinePartial2D(previousPointsCorrected, currentPointsCorrected)[0]
         # Extract translation
         dx = m[0, 2]
         dy = m[1, 2]
@@ -214,7 +265,7 @@ for fileName in askUserForFiles():
         previousImage = preprocessImage(image, width, height, cameraMatrix, distortionCoeffs, newCameraMatrix)
 
         # Get transformations
-        transforms = np.zeros((numberOfFrames - 1, 3), np.float32)
+        transforms = np.zeros((numberOfFrames, 3), np.float32)
         index = 0
         # Analyze the video, if we don't have a trajectory file already
         for _ in range(numberOfFrames - 2):
@@ -227,10 +278,19 @@ for fileName in askUserForFiles():
 
             print(f"Frame {index} of {numberOfFrames}")
             currentImage = preprocessImage(image, width, height, cameraMatrix, distortionCoeffs, newCameraMatrix)
-            dx, dy, da = getCameraShiftLK(previousImage, currentImage, width, height)
+            if tracker == "flow":
+                dx, dy, da = getCameraShiftLK(previousImage, currentImage, width, height)
+            elif tracker == "doubleflow":
+                dx1, dy1, da1 = getCameraShiftLK(previousImage, currentImage, width, height)
+                dx2, dy2, da2 = getCameraShiftLK(currentImage, previousImage, width, height)
+                dx = (dx1 - dx2) / 2.
+                dy = (dy1 - dy2) / 2.
+                da = (da1 - da2) / 2.
+            else:
+                dx, dy, da = getCameraShiftFeature(previousImage, currentImage, width, height)
 
             # Store transformation
-            transforms[index] = [dx, dy, da]
+            transforms[index + 1] = [dx, dy, da]
 
             previousImage = currentImage
 
