@@ -2,47 +2,74 @@
 import numpy as np
 import cv2
 import os
-
+from exif import Image
 
 ############ Start of config ############
 tracker = "doubleflow"  # matcher, flow, doubleflow, registration
 
 # Copy the camera matrix from the lens profile you are using in gyroflow
-cameraMatrix = [
-    [
-        1836.9922183665276,
-        0.0,
-        1920.41209963424
-    ],
-    [
-        0.0,
-        1842.3851575279864,
-        1074.5706377526926
-    ],
-    [
-        0.0,
-        0.0,
-        1.0
-    ]
-]
+lensProfiles = {
+    # Add as many profiles as you like, in case video file has enough metadata
+    # for a unique identifier (e.g. lens and camera name)
+    "3840_2160_59_Canon EOS R8_16.0_*_RF16mm F2.8 STM": {
+        "camera_matrix": [
+            [
+                1836.9922183665276,
+                0.0,
+                1920.41209963424
+            ],
+            [
+                0.0,
+                1842.3851575279864,
+                1074.5706377526926
+            ],
+            [
+                0.0,
+                0.0,
+                1.0
+            ]
+        ],
+        "distortion_coeffs": [
+            0.38299220710571275,
+            -0.17675639024960604,
+            0.7856650933984539,
+            -0.5395566240889261
+        ]
+    },
+    # ... and this is the fallback if no profile matches:
+    "default": {
+        "camera_matrix": [
+            [
+                5801.606439877379,
+                0.0,
+                1930.5760969035825
+            ],
+            [
+                0.0,
+                5810.509627755767,
+                1112.9812445517732
+            ],
+            [
+                0.0,
+                0.0,
+                1.0
+            ]
+        ],
+        "distortion_coeffs": [
+            0.27548726435520854,
+            -2.1102239947731887,
+            25.6426432549478,
+            -99.77349159535086
+        ]
+    },
+}
 
-
-distortionCoeffs = [
-    0.38299220710571275,
-    -0.17675639024960604,
-    0.7856650933984539,
-    -0.5395566240889261
-]
 # The scale can be used for fixing the result. If the detected shifts
 # are too small (e.g. camera movements are not possible to be eliminated
 # completely), a correction with scale > 1 might help (e.g. 1.05)
 scale = 1.0
-
 internalImageWidth = 1280
 ############ End of config ############
-
-cameraMatrix = np.array(cameraMatrix)
-distortionCoeffs = np.array(distortionCoeffs)
 
 
 def preprocessImage(image, width, height, cameraMatrix, distortionCoeffs, newCameraMatrix):
@@ -207,6 +234,41 @@ def getCameraShiftLK(previousImage, currentImage, width, height):
         return 0, 0, 0
 
 
+def getExifFieldIfExists(video, field):
+    if field in video.list_all():
+        return video[field]
+    return "*"
+
+
+def getCameraIdentifier(fileName, cap):
+    identifierElements = [
+        str(int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))),
+        str(int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))),
+        str(int(cap.get(cv2.CAP_PROP_FPS))),
+    ]
+    try:
+        with open(fileName, 'rb') as videoFile:
+            video = Image(videoFile)
+            if video.has_exif:
+                identifierElements += [
+                    getExifFieldIfExists(video, "model"),
+                    str(getExifFieldIfExists(video, "focal_length")),
+                    getExifFieldIfExists(video, "lens_make"),
+                    getExifFieldIfExists(video, "lens_model"),
+                ]
+    except Exception as e:
+        print("Could not read extended camera information.")
+        # print("Error:", e)
+    return "_".join(identifierElements)
+
+
+def loadLensProfile(lensProfiles, identifier):
+    print("Load profile", identifier)
+    cameraMatrix = np.array(lensProfiles[identifier]["camera_matrix"])
+    distortionCoeffs = np.array(lensProfiles[identifier]["distortion_coeffs"])
+    return cameraMatrix, distortionCoeffs
+
+
 for fileName in askUserForFiles():
     print("Processing file", fileName)
     baseFileName = ".".join(fileName.split(".")[0:-1])
@@ -215,6 +277,14 @@ for fileName in askUserForFiles():
     fileNameTrajectory = baseFileName + ".transforms.npy"
 
     cap = cv2.VideoCapture(fileName)
+    cameraIdentifier = getCameraIdentifier(fileName, cap)
+    if cameraIdentifier in lensProfiles:
+        cameraMatrix, distortionCoeffs = loadLensProfile(
+            lensProfiles, cameraIdentifier)
+    else:
+        cameraMatrix, distortionCoeffs = loadLensProfile(
+            lensProfiles, "default")
+
     size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
             int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
     newCameraMatrix, roi = cv2.getOptimalNewCameraMatrix(
@@ -300,18 +370,15 @@ for fileName in askUserForFiles():
         dyRotation = -1 * np.sign(dy) * \
             vectorAngle(yDirection, axis) * fps * scale
 
-        # Not sure about the order of rotations. In case gyroflow has a specific order,
-        # we could change it this way. I think so.
-        # from scipy.spatial.transform import Rotation
-        # rot = Rotation.from_euler('xyz', [dxRotation, dyRotation, da], degrees=False)
-        # # Convert to quaternions and print
-        # rot_adjusted = rot.as_euler('zyx')
-        # dxRotation, dyRotation, da = rot_adjusted
-
         csvOut += f"{i},{dxRotation},{dyRotation},{da}\n"
     f = open(fileNameGyro, "w")
     f.write(csvOut)
     f.close()
+    if cameraIdentifier is not None and cameraIdentifier not in lensProfiles:
+        print("\nPS: The script can auto-assign this profile to all videos",
+              "with similar settings. Add it to 'lensProfiles'",
+              f"under the name \n'{cameraIdentifier}'\n")
+
     print(
         "Done with",
         fileName,
