@@ -11,7 +11,7 @@ For example, a video filmed out of a moving car, or a video full of moving subje
 
 ## Instructions
 1. Download and install python 3
-2. Install required packages. Open a terminal and run "python -mpip install opencv-python" and "python -mpip install numpy"
+2. Install required packages. Open a terminal and run "python -mpip install opencv-python", "python -mpip install exif" and "python -mpip install numpy"
 3. Put the script into the folder of the video files. Open this script in a text editor and replace "camera_matrix" with the one that you find in the lens profile that you use in gyroflow
 4. Execute the script by calling "python gyro-estimation.py". Now enter the filename of the video you want to stabilize
 5. Wait until it's done
