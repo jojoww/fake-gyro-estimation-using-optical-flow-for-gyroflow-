@@ -15,7 +15,7 @@ For example, a video filmed out of a moving car, or a video full of moving subje
 3. Put the script into the folder of the video files. Open this script in a text editor and replace "camera_matrix"/"distortion_coeffs" with the one that you find in the lens profile that you use in gyroflow
 4. Execute the script by calling "python gyro-estimation.py". Now enter the filename of the video you want to stabilize. You can add a string that matches multiple files in case you want to perform batch processing.
 5. Wait until it's done
-6. Open Gyroflow and open your video file. It will automatically load the gyro data. No sync is needed.
+6. Open Gyroflow and open your video file. It will automatically load the gyro data (if not, open <videoFileName>.gcsv as "Motion data"). No sync is needed.
 
 
 To overcome this, you can edit the script and change the "scale" parameter (in very small steps, e.g. from 1.0 to 1.05).
