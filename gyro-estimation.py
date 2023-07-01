@@ -5,12 +5,15 @@ import os
 from exif import Image
 
 ############ Start of config ############
-tracker = "doubleflow"  # matcher, flow, doubleflow, registration
+tracker = "doubleflow"  # Choose from: matcher, flow, doubleflow, registration
 
-# Copy the camera matrix from the lens profile you are using in gyroflow
+# Copy the camera matrix and distortion coefficients from the lens profile 
+# you are using in gyroflow
 lensProfiles = {
     # Add as many profiles as you like, in case video file has enough metadata
-    # for a unique identifier (e.g. lens and camera name)
+    # for a unique identifier (e.g. lens and camera name). The script will tell
+    # you the identifier that you should use once you have processed a video 
+    # with "default" settings.
     "3840_2160_59_Canon EOS R8_16.0_*_RF16mm F2.8 STM": {
         "camera_matrix": [
             [
@@ -36,7 +39,9 @@ lensProfiles = {
             -0.5395566240889261
         ]
     },
-    # ... and this is the fallback if no profile matches:
+    # And this is the fallback if no profile matches. If your video doesn't
+    # contain sufficient metadata, put your reuqired profiles here to the
+    # default slot.
     "default": {
         "camera_matrix": [
             [
@@ -66,8 +71,13 @@ lensProfiles = {
 
 # The scale can be used for fixing the result. If the detected shifts
 # are too small (e.g. camera movements are not possible to be eliminated
-# completely), a correction with scale > 1 might help (e.g. 1.05)
+# completely), a correction with scale > 1 might help (e.g. 1.05).
+# However, if you have a good lens profile, you should NOT USE THE SCALE.
 scale = 1.0
+
+# The size to which images are downsampled before motion detection. 
+# Smaller resolution might lead to faster processing, but smaller
+# details are not considered for motion detection.
 internalImageWidth = 1280
 ############ End of config ############
 
@@ -106,20 +116,23 @@ def pairedPointsToPixelShifts(points1, points2, width, height):
     # Extract translation
     dx = m[0, 2]
     dy = m[1, 2]
-
     # Extract rotation angle
     da = np.arctan2(m[1, 0], m[0, 0])
-    return dx, dy, da
+    # Get average point. We assume the calculcated translation is optimum for this point.
+    meanPoint = np.mean(points1, 0)
+    return dx, dy, da, meanPoint[0, 0], meanPoint[0, 1]
 
 
 def askUserForFiles():
     allFiles = next(os.walk("."), (None, None, []))[2]
     allFilesFiltered = [f for f in allFiles if not f.endswith(
         "py") and not f.endswith("csv") and "stabilized" not in f]
+    print("Found the following files:")
     print(
-        "\n".join(allFilesFiltered),
-        "\nFound the abovementioned files. Which one(s) should be processed?")
-    print("Enter file name, or file name part that matches multiple files, e.g. 'MP4' to process all MP4 files.")
+        "\n".join(["   " + f for f in allFilesFiltered]),
+        "\nWhich file(s) of the current folder should be processed?")
+    print("Enter the file name, or just a file name part that matches multiple files,"
+          "e.g. 'MP4' to process all MP4 files.")
     filePattern = input()
     return [f for f in allFilesFiltered if filePattern in f]
 
@@ -185,29 +198,21 @@ def getCameraShiftFeature(previousImage, currentImage, width, height):
     matches = sorted(matches, key=lambda x: x.distance, reverse=False)
     numGoodMatches = int(len(matches) * topMatchesToUsePercentage)
     matches = matches[:numGoodMatches]
-
-    # Draw top matches
-    # imMatches = cv2.drawMatches(previousImage, keypoints1, currentImage, keypoints2, matches, None)
-    # cv2.imwrite("matches.jpg", imMatches)
-
     minimumTrackedFeatures = 5
-    print(f"Found {len(matches)} features")
+    print(f"    Found {len(matches)} features")
     if len(matches) > minimumTrackedFeatures:
         # Extract location of good matches
         points1 = np.zeros((len(matches), 2), dtype=np.float32)
         points2 = np.zeros((len(matches), 2), dtype=np.float32)
-
         for i, match in enumerate(matches):
             points1[i, :] = np.array(keypoints1[match.queryIdx].pt)
             points2[i, :] = np.array(keypoints2[match.trainIdx].pt)
-
         return pairedPointsToPixelShifts(points1, points2, width, height)
     else:
         return 0, 0, 0
 
 
 def getCameraShiftLK(previousImage, currentImage, width, height):
-    # Detect feature points in previous frame
     borderHeight = int(height/5)
     borderWidth = int(height/5)
     edgeMask = np.zeros((height, width), dtype=np.uint8)
@@ -219,14 +224,14 @@ def getCameraShiftLK(previousImage, currentImage, width, height):
                                       minDistance=30,
                                       blockSize=3,
                                       mask=edgeMask)
-
     points2, status, _ = cv2.calcOpticalFlowPyrLK(
         previousImage, currentImage, points1, None)
     assert points1.shape == points2.shape
+    # Extract location of good matches
     idx = np.where(status == 1)[0]
     points1 = points1[idx]
     points2 = points2[idx]
-    print(f"Found {len(points1)} features")
+    print(f"    Found {len(points1)} features")
     minimumTrackedFeatures = 5
     if len(points1) > minimumTrackedFeatures and len(points2) > minimumTrackedFeatures:
         return pairedPointsToPixelShifts(points1, points2, width, height)
@@ -257,7 +262,7 @@ def getCameraIdentifier(fileName, cap):
                     getExifFieldIfExists(video, "lens_model"),
                 ]
     except Exception as e:
-        print("Could not read extended camera information.")
+        pass
         # print("Error:", e)
     return "_".join(identifierElements)
 
@@ -270,11 +275,9 @@ def loadLensProfile(lensProfiles, identifier):
 
 
 for fileName in askUserForFiles():
-    print("Processing file", fileName)
-    baseFileName = ".".join(fileName.split(".")[0:-1])
-
-    fileNameGyro = baseFileName + '.gcsv'
-    fileNameTrajectory = baseFileName + ".transforms.npy"
+    print("-" * 80)
+    print("Start processing file", fileName)
+    fileNameGyro = ".".join(fileName.split(".")[0:-1]) + '.gcsv'
 
     cap = cv2.VideoCapture(fileName)
     cameraIdentifier = getCameraIdentifier(fileName, cap)
@@ -287,82 +290,63 @@ for fileName in askUserForFiles():
 
     size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
             int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
-    newCameraMatrix, roi = cv2.getOptimalNewCameraMatrix(
-        cameraMatrix, distortionCoeffs, size, 1, size)
     newCameraMatrix = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
         cameraMatrix, distortionCoeffs, size, np.eye(3))
 
     numberOfFrames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    height = int(
-        cap.get(
-            cv2.CAP_PROP_FRAME_HEIGHT) /
-        cap.get(
-            cv2.CAP_PROP_FRAME_WIDTH) *
-        internalImageWidth)
-    fov, cameraDistance = getFovAndCanvasDistance(
-        int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), internalImageWidth, cameraMatrix)
+    height = int(size[1] / size[0] * internalImageWidth)
     width = int(internalImageWidth)
+    fov, cameraDistance = getFovAndCanvasDistance(
+        size[0], internalImageWidth, cameraMatrix)
     fps = cap.get(cv2.CAP_PROP_FPS)
 
-    # Analyze the video, if we don't have a trajectory file already
-    if not os.path.isfile(fileNameTrajectory):
-        _, image = cap.read()
-        previousImage = preprocessImage(
+    _, image = cap.read()
+    previousImage = preprocessImage(
+        image, width, height, cameraMatrix, distortionCoeffs, newCameraMatrix)
+
+    transforms = np.zeros((numberOfFrames, 5), np.float32)
+    index = 0
+    for _ in range(numberOfFrames - 2):
+        success, image = cap.read()
+        if image is None:
+            print("   Info: could not read frame", index, " - skip it")
+            continue
+
+        print(f"   Frame {index} of {numberOfFrames}")
+        currentImage = preprocessImage(
             image, width, height, cameraMatrix, distortionCoeffs, newCameraMatrix)
+        if tracker == "flow":
+            dx, dy, da, meanX, meanY = getCameraShiftLK(
+                previousImage, currentImage, width, height)
+        elif tracker == "doubleflow":
+            dx1, dy1, da1, meanX, meanY = getCameraShiftLK(
+                previousImage, currentImage, width, height)
+            dx2, dy2, da2, _, _ = getCameraShiftLK(
+                currentImage, previousImage, width, height)
+            dx = (dx1 - dx2) / 2.
+            dy = (dy1 - dy2) / 2.
+            da = (da1 - da2) / 2.
+        elif tracker == "matcher":
+            dx, dy, da, meanX, meanY = getCameraShiftFeature(
+                previousImage, currentImage, width, height)
+        else:
+            dx, dy, da, meanX, meanY = getCameraShiftByRegistration(
+                previousImage, currentImage, width, height)
 
-        # Get transformations
-        transforms = np.zeros((numberOfFrames, 3), np.float32)
-        index = 0
-        # Analyze the video, if we don't have a trajectory file already
-        for _ in range(numberOfFrames - 2):
-            # Read next frame
-            success, image = cap.read()
-            if image is None:
-                # index -= 1
-                print("Had to skip frame", index)
-                continue
-
-            print(f"Frame {index} of {numberOfFrames}")
-            currentImage = preprocessImage(
-                image, width, height, cameraMatrix, distortionCoeffs, newCameraMatrix)
-            if tracker == "flow":
-                dx, dy, da = getCameraShiftLK(
-                    previousImage, currentImage, width, height)
-            elif tracker == "doubleflow":
-                dx1, dy1, da1 = getCameraShiftLK(
-                    previousImage, currentImage, width, height)
-                dx2, dy2, da2 = getCameraShiftLK(
-                    currentImage, previousImage, width, height)
-                dx = (dx1 - dx2) / 2.
-                dy = (dy1 - dy2) / 2.
-                da = (da1 - da2) / 2.
-            elif tracker == "matcher":
-                dx, dy, da = getCameraShiftFeature(
-                    previousImage, currentImage, width, height)
-            else:
-                dx, dy, da = getCameraShiftByRegistration(
-                    previousImage, currentImage, width, height)
-
-            # Store transformation
-            transforms[index + 1] = [dx, dy, da]
-
-            previousImage = currentImage
-
-            index += 1
-        np.save(fileNameTrajectory, transforms)
+        transforms[index + 1] = [dx, dy, da, meanX, meanY]
+        previousImage = currentImage
+        index += 1
     cap.release()
-
     csvOut = getCsvHeader(fps)
-    transforms = np.load(fileNameTrajectory)
 
     for i, step in enumerate(transforms):
-        dx, dy, da = step
+        dx, dy, da, meanX, meanY = step
         da = da * fps
 
-        # Get vectors looking at the "shift targets"
-        xDirection = np.array([dx, cameraDistance])
-        yDirection = np.array([dy, cameraDistance])
-        axis = np.array([0, 1])
+        # Get vectors looking at the "shift target"
+        xDirection = np.array([meanX + dx, meanY, cameraDistance])
+        yDirection = np.array([meanX, meanY + dy, cameraDistance])
+        axis = np.array([meanX, meanY, cameraDistance])
 
         # Find out the angle you need in order to reach the "shift target"
         dxRotation = -1 * np.sign(dx) * \
@@ -376,10 +360,8 @@ for fileName in askUserForFiles():
     f.close()
     if cameraIdentifier is not None and cameraIdentifier not in lensProfiles:
         print("\nPS: The script can auto-assign this profile to all videos",
-              "with similar settings. Add it to 'lensProfiles'",
+              "with similar settings, at least if the following identifier",
+              "is somewhat unique. Add it to 'lensProfiles'",
               f"under the name \n'{cameraIdentifier}'\n")
 
-    print(
-        "Done with",
-        fileName,
-        f"- in gyroflow, use a manual sync point with {(1000/fps):.2f}ms")
+    print("Done with", fileName)
