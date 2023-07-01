@@ -209,7 +209,7 @@ def getCameraShiftFeature(previousImage, currentImage, width, height):
             points2[i, :] = np.array(keypoints2[match.trainIdx].pt)
         return pairedPointsToPixelShifts(points1, points2, width, height)
     else:
-        return 0, 0, 0
+        return 0, 0, 0, 0, 0
 
 
 def getCameraShiftLK(previousImage, currentImage, width, height):
@@ -236,7 +236,7 @@ def getCameraShiftLK(previousImage, currentImage, width, height):
     if len(points1) > minimumTrackedFeatures and len(points2) > minimumTrackedFeatures:
         return pairedPointsToPixelShifts(points1, points2, width, height)
     else:
-        return 0, 0, 0
+        return 0, 0, 0, 0, 0
 
 
 def getExifFieldIfExists(video, field):
